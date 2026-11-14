@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Openscalers-dev/opencompute/internal/hardware"
+	"github.com/Openscalers-dev/opencompute/internal/identity"
 	"github.com/Openscalers-dev/opencompute/internal/metrics"
 	"github.com/Openscalers-dev/opencompute/internal/monitoring"
 
@@ -27,8 +28,14 @@ func main() {
 
 	fmt.Println("Opencompute Agent Starting... \n Version 0.1.0 \n Status: Initializing")
 
-	node, err := hardware.Discover()
+	nodeIdentity, err := identity.LoadOrCreate()
+	if err != nil {
+		fmt.Println("Error loading node identity:", err)
+		return
+	}
+	fmt.Println("Node ID:", nodeIdentity.NodeID)
 
+	node, err := hardware.Discover()
 	if err != nil {
 		fmt.Println("Error discovering node:", err)
 		return
@@ -54,10 +61,9 @@ func main() {
 
 	monitoring.RegisterMetrics()
 
+	// Start HTTP server for Prometheus metrics
 	mux := http.NewServeMux()
-
 	mux.Handle("/metrics", promhttp.Handler())
-
 	go func() {
 		fmt.Println("Prometheus metrics available at http://127.0.0.1:9101/metrics")
 
