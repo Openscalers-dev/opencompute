@@ -5,7 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
-    "syscall"
+	"syscall"
 )
 
 func DiscoverMemory() (uint64, error) {
@@ -36,18 +36,16 @@ func DiscoverMemory() (uint64, error) {
 	return 0, fmt.Errorf("MemTotal not found")
 }
 
-
 func DiscoverDisk() (uint64, uint64, error) {
-    var stat syscall.Statfs_t
+	var stat syscall.Statfs_t
 
-    err := syscall.Statfs("/", &stat)
-    if err != nil {
-        return 0, 0, err
-    }
+	err := syscall.Statfs("/", &stat)
+	if err != nil {
+		return 0, 0, err
+	}
 
-    total := stat.Blocks * uint64(stat.Bsize)
-    available := stat.Bavail * uint64(stat.Bsize)
+	total := stat.Blocks * uint64(stat.Bsize)
+	available := stat.Bavail * uint64(stat.Bsize)
 
-    return total, available, nil
+	return total, available, nil
 }
-	

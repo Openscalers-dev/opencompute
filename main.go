@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Openscalers-dev/opencompute/internal/hardware"
+	"github.com/Openscalers-dev/opencompute/internal/metrics"
 )
 
 func main() {
@@ -54,7 +55,18 @@ func main() {
 	for {
 		select {
 		case <-ticker.C:
-			fmt.Println("OpenCompute heartbeat:", time.Now().Format("15:04:05"))
+			systemMetrics, err := metrics.GetSystemMetrics()
+			if err != nil {
+				fmt.Println("Error getting system metrics:", err)
+				continue
+			}
+
+			fmt.Printf(
+				"CPU: %.2f%% | RAM: %.2f%% | Disk: %.2f%%\n",
+				systemMetrics.CPUUsagePercent,
+				systemMetrics.MemoryUsagePercent,
+				systemMetrics.DiskUsagePercent,
+			)
 		case <-ctx.Done():
 			fmt.Println("OpenCompute Agent Shutting Down...")
 			return
