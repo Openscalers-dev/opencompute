@@ -44,7 +44,7 @@ func main() {
 	}
 
 	// Connect to the OpenScalers Control Plane
-	apiClient := client.NewClient("http://127.0.0.1:8080")
+	apiClient := client.NewClient("https://api.openscalers.dev")
 
 	// Prepare node registration
 	registration := client.RegistrationRequest{
