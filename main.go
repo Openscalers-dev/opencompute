@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/Openscalers-dev/opencompute/internal/client"
 	"github.com/Openscalers-dev/opencompute/internal/hardware"
 	"github.com/Openscalers-dev/opencompute/internal/identity"
 	"github.com/Openscalers-dev/opencompute/internal/metrics"
@@ -39,6 +41,27 @@ func main() {
 	if err != nil {
 		fmt.Println("Error discovering node:", err)
 		return
+	}
+
+	// Connect to the OpenScalers Control Plane
+	apiClient := client.NewClient("http://127.0.0.1:8080")
+
+	// Prepare node registration
+	registration := client.RegistrationRequest{
+		NodeID:         nodeIdentity.NodeID,
+		Hostname:       node.Hostname,
+		OS:             node.OS,
+		Architecture:   node.Architecture,
+		CPUs:           node.CPUs,
+		MemoryBytes:    node.MemoryBytes,
+		DiskTotalBytes: node.DiskTotal,
+	}
+
+	// Register the node
+	if err := apiClient.Register(registration); err != nil {
+		log.Printf("Failed to register node: %v", err)
+	} else {
+		log.Println("Successfully registered node with OpenScalers!")
 	}
 
 	//Print node information
@@ -76,6 +99,7 @@ func main() {
 	//Heartbeat ticket
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
+	lastHeartbeat := time.Time{}
 
 	for {
 		select {
@@ -91,6 +115,22 @@ func main() {
 				systemMetrics.MemoryUsagePercent,
 				systemMetrics.DiskUsagePercent,
 			)
+			// Send heartbeat every 15 seconds.
+			if time.Since(lastHeartbeat) >= 15*time.Second {
+				heartbeat := client.HeartbeatRequest{
+					NodeID:      nodeIdentity.NodeID,
+					CPUUsage:    systemMetrics.CPUUsagePercent,
+					MemoryUsage: systemMetrics.MemoryUsagePercent,
+					DiskUsage:   systemMetrics.DiskUsagePercent,
+				}
+
+				if err := apiClient.Heartbeat(heartbeat); err != nil {
+					log.Printf("Heartbeat failed: %v", err)
+				} else {
+					log.Println("Heartbeat sent successfully!")
+					lastHeartbeat = time.Now()
+				}
+			}
 
 			fmt.Printf(
 				"CPU: %.2f%% | RAM: %.2f%% | Disk: %.2f%%\n",
