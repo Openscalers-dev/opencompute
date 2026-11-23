@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	"github.com/Openscalers-dev/opencompute/internal/metrics"
 	"github.com/Openscalers-dev/opencompute/internal/monitoring"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -57,13 +60,6 @@ func main() {
 		DiskTotalBytes: node.DiskTotal,
 	}
 
-	// Register the node
-	if err := apiClient.Register(registration); err != nil {
-		log.Printf("Failed to register node: %v", err)
-	} else {
-		log.Println("Successfully registered node with OpenScalers!")
-	}
-
 	//Print node information
 	fmt.Println("Node:", node.Hostname)
 	fmt.Println("Operating System:", node.OS)
@@ -82,65 +78,126 @@ func main() {
 		float64(node.DiskAvailable)/(1024*1024*1024),
 	)
 
-	monitoring.RegisterMetrics()
+	monitoring.RegisterMetrics(prometheus.DefaultRegisterer)
 
-	// Start HTTP server for Prometheus metrics
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
+	server := &http.Server{
+		Addr:    "127.0.0.1:9101",
+		Handler: mux,
+	}
 	go func() {
 		fmt.Println("Prometheus metrics available at http://127.0.0.1:9101/metrics")
-
-		err := http.ListenAndServe("127.0.0.1:9101", mux)
-		if err != nil {
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			fmt.Println("HTTP server error:", err)
 		}
 	}()
 
-	//Heartbeat ticket
-	ticker := time.NewTicker(5 * time.Second)
+	report(ctx, apiClient, registration, 5*time.Second, 15*time.Second)
+
+	fmt.Println("OpenCompute Agent Shutting Down...")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("Shutting down metrics server: %v", err)
+	}
+}
+
+func report(ctx context.Context, apiClient *client.Client, registration client.RegistrationRequest, sampleInterval, heartbeatInterval time.Duration) {
+	samples := make(chan *metrics.SystemMetrics, 1)
+	var sender sync.WaitGroup
+	sender.Go(func() {
+		reportToControlPlane(ctx, apiClient, registration, samples, sampleInterval, heartbeatInterval)
+	})
+	defer sender.Wait()
+
+	ticker := time.NewTicker(sampleInterval)
 	defer ticker.Stop()
-	lastHeartbeat := time.Time{}
 
 	for {
 		select {
+		case <-ctx.Done():
+			return
 		case <-ticker.C:
-			systemMetrics, err := metrics.GetSystemMetrics()
-			if err != nil {
-				fmt.Println("Error getting system metrics:", err)
+			if ctx.Err() != nil {
+				return
+			}
+		}
+
+		systemMetrics, err := metrics.GetSystemMetrics()
+		if err != nil {
+			fmt.Println("Error getting system metrics:", err)
+			continue
+		}
+		monitoring.UpdateMetrics(
+			systemMetrics.CPUUsagePercent,
+			systemMetrics.MemoryUsagePercent,
+			systemMetrics.DiskUsagePercent,
+		)
+
+		// Keep only the latest pending sample while a request is in flight.
+		select {
+		case <-samples:
+		default:
+		}
+		samples <- systemMetrics
+
+		fmt.Printf(
+			"CPU: %.2f%% | RAM: %.2f%% | Disk: %.2f%%\n",
+			systemMetrics.CPUUsagePercent,
+			systemMetrics.MemoryUsagePercent,
+			systemMetrics.DiskUsagePercent,
+		)
+	}
+}
+
+func reportToControlPlane(ctx context.Context, apiClient *client.Client, registration client.RegistrationRequest, samples <-chan *metrics.SystemMetrics, retryInterval, heartbeatInterval time.Duration) {
+	registered := registerNode(ctx, apiClient, registration)
+	retry := time.NewTicker(retryInterval)
+	defer retry.Stop()
+
+	var lastHeartbeat time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-retry.C:
+			if !registered {
+				registered = registerNode(ctx, apiClient, registration)
+			}
+		case systemMetrics := <-samples:
+			if !registered || time.Since(lastHeartbeat) < heartbeatInterval {
 				continue
 			}
-
-			monitoring.UpdateMetrics(
-				systemMetrics.CPUUsagePercent,
-				systemMetrics.MemoryUsagePercent,
-				systemMetrics.DiskUsagePercent,
-			)
-			// Send heartbeat every 15 seconds.
-			if time.Since(lastHeartbeat) >= 15*time.Second {
-				heartbeat := client.HeartbeatRequest{
-					NodeID:      nodeIdentity.NodeID,
-					CPUUsage:    systemMetrics.CPUUsagePercent,
-					MemoryUsage: systemMetrics.MemoryUsagePercent,
-					DiskUsage:   systemMetrics.DiskUsagePercent,
-				}
-
-				if err := apiClient.Heartbeat(heartbeat); err != nil {
-					log.Printf("Heartbeat failed: %v", err)
-				} else {
-					log.Println("Heartbeat sent successfully!")
-					lastHeartbeat = time.Now()
-				}
+			heartbeat := client.HeartbeatRequest{
+				NodeID:      registration.NodeID,
+				CPUUsage:    systemMetrics.CPUUsagePercent,
+				MemoryUsage: systemMetrics.MemoryUsagePercent,
+				DiskUsage:   systemMetrics.DiskUsagePercent,
 			}
-
-			fmt.Printf(
-				"CPU: %.2f%% | RAM: %.2f%% | Disk: %.2f%%\n",
-				systemMetrics.CPUUsagePercent,
-				systemMetrics.MemoryUsagePercent,
-				systemMetrics.DiskUsagePercent,
-			)
-		case <-ctx.Done():
-			fmt.Println("OpenCompute Agent Shutting Down...")
-			return
+			if err := apiClient.Heartbeat(ctx, heartbeat); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				log.Printf("Heartbeat failed: %v", err)
+				if errors.Is(err, client.ErrNodeNotRegistered) {
+					registered = false
+				}
+				continue
+			}
+			log.Println("Heartbeat sent successfully!")
+			lastHeartbeat = time.Now()
 		}
 	}
+}
+
+func registerNode(ctx context.Context, apiClient *client.Client, registration client.RegistrationRequest) bool {
+	if err := apiClient.Register(ctx, registration); err != nil {
+		if ctx.Err() == nil {
+			log.Printf("Failed to register node: %v", err)
+		}
+		return false
+	}
+	log.Println("Successfully registered node with OpenScalers!")
+	return true
 }

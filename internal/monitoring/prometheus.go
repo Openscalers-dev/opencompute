@@ -27,8 +27,8 @@ var (
 	)
 )
 
-func RegisterMetrics() {
-	prometheus.MustRegister(cpuusage, memoryusage, diskusage)
+func RegisterMetrics(registerer prometheus.Registerer) {
+	registerer.MustRegister(cpuusage, memoryusage, diskusage)
 }
 
 func UpdateMetrics(cpu, memory, disk float64) {
