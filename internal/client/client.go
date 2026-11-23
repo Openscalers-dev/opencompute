@@ -2,7 +2,9 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -36,31 +38,22 @@ type RegistrationRequest struct {
 }
 
 // Register sends the node's information to the control plane.
-func (c *Client) Register(node RegistrationRequest) error {
+func (c *Client) Register(ctx context.Context, node RegistrationRequest) error {
 	body, err := json.Marshal(node)
 	if err != nil {
 		return fmt.Errorf("encoding registration request: %w", err)
 	}
 
-	url := c.baseURL + "/v1/nodes/register"
-
-	resp, err := c.httpClient.Post(
-		url,
-		"application/json",
-		bytes.NewReader(body),
-	)
+	status, err := c.post(ctx, "/v1/nodes/register", body)
 	if err != nil {
 		return fmt.Errorf("sending registration request: %w", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("registration failed: HTTP %d", resp.StatusCode)
+	if status != http.StatusCreated {
+		return fmt.Errorf("registration failed: HTTP %d", status)
 	}
 
 	return nil
 }
-
 
 // HeartbeatRequest contains the node's latest utilization metrics.
 type HeartbeatRequest struct {
@@ -70,28 +63,42 @@ type HeartbeatRequest struct {
 	DiskUsage   float64 `json:"disk_usage"`
 }
 
+// ErrNodeNotRegistered signals that the control plane no longer knows this node.
+var ErrNodeNotRegistered = errors.New("node is not registered")
+
 // Heartbeat sends the node's latest metrics to the control plane.
-func (c *Client) Heartbeat(heartbeat HeartbeatRequest) error {
+func (c *Client) Heartbeat(ctx context.Context, heartbeat HeartbeatRequest) error {
 	body, err := json.Marshal(heartbeat)
 	if err != nil {
 		return fmt.Errorf("encoding heartbeat: %w", err)
 	}
 
-	url := c.baseURL + "/v1/nodes/heartbeat"
-
-	resp, err := c.httpClient.Post(
-		url,
-		"application/json",
-		bytes.NewReader(body),
-	)
+	status, err := c.post(ctx, "/v1/nodes/heartbeat", body)
 	if err != nil {
 		return fmt.Errorf("sending heartbeat: %w", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("heartbeat failed: HTTP %d", resp.StatusCode)
+	if status == http.StatusNotFound {
+		return fmt.Errorf("heartbeat failed: HTTP %d: %w", status, ErrNodeNotRegistered)
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("heartbeat failed: HTTP %d", status)
 	}
 
 	return nil
+}
+
+func (c *Client) post(ctx context.Context, path string, body []byte) (int, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return 0, err
+	}
+	defer response.Body.Close()
+
+	return response.StatusCode, nil
 }

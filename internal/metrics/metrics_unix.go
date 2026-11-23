@@ -1,17 +1,15 @@
+//go:build linux || darwin
+
 package metrics
 
 import (
 	"fmt"
 	"time"
 
-	//go get github.com/shirou/gopsutil/v4/cpu
+	"github.com/Openscalers-dev/opencompute/internal/hardware"
 	"github.com/shirou/gopsutil/v4/cpu"
-
-	//go get github.com/shirou/gopsutil/v4/mem
-	"github.com/shirou/gopsutil/v4/mem"
-
-	//go get github.com/shirou/gopsutil/v4/disk
 	"github.com/shirou/gopsutil/v4/disk"
+	"github.com/shirou/gopsutil/v4/mem"
 )
 
 func GetCPUUsage() (float64, error) {
@@ -37,7 +35,7 @@ func GetMemoryUsage() (float64, error) {
 }
 
 func GetDiskUsage() (float64, error) {
-	usage, err := disk.Usage("/")
+	usage, err := disk.Usage(hardware.SystemDiskPath())
 	if err != nil {
 		return 0, fmt.Errorf("failed to get disk usage: %w", err)
 	}

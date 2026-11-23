@@ -36,10 +36,15 @@ func DiscoverMemory() (uint64, error) {
 	return 0, fmt.Errorf("MemTotal not found")
 }
 
+// SystemDiskPath returns the mount point used for disk discovery and monitoring.
+func SystemDiskPath() string {
+	return "/"
+}
+
 func DiscoverDisk() (uint64, uint64, error) {
 	var stat syscall.Statfs_t
 
-	err := syscall.Statfs("/", &stat)
+	err := syscall.Statfs(SystemDiskPath(), &stat)
 	if err != nil {
 		return 0, 0, err
 	}
